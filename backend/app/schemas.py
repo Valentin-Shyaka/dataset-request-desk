@@ -22,3 +22,28 @@ class UserOut(BaseModel):
     organisation: str | None
     role: Role
     is_active: bool
+
+
+class UserCreate(BaseModel):
+    email: str = Field(pattern=EMAIL_PATTERN, max_length=254)
+    name: str = Field(min_length=1, max_length=200)
+    organisation: str | None = Field(default=None, max_length=200)
+    role: Role
+    password: str = Field(min_length=8, max_length=72)
+
+    @field_validator("email")
+    @classmethod
+    def lowercase_email(cls, value: str) -> str:
+        return value.strip().lower()
+
+    @field_validator("password")
+    @classmethod
+    def fits_bcrypt(cls, value: str) -> str:
+        if len(value.encode()) > 72:
+            raise ValueError("password must be at most 72 bytes")
+        return value
+
+
+class UserUpdate(BaseModel):
+    role: Role | None = None
+    is_active: bool | None = None
