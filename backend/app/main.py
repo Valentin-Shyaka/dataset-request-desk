@@ -6,12 +6,14 @@ from sqlalchemy import text
 
 from app.access_log import AccessLogMiddleware, configure_logging
 from app.db import engine
+from app.routers import auth
 
 configure_logging()
 log = logging.getLogger("drd")
 
 app = FastAPI(title="Dataset Request Desk")
 app.add_middleware(AccessLogMiddleware)
+app.include_router(auth.router)
 
 
 @app.get("/health")
