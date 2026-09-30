@@ -22,7 +22,8 @@ class JsonFormatter(logging.Formatter):
 
 
 def configure_logging() -> None:
-    handler = logging.StreamHandler(sys.stdout)
+    # stderr: stdout is reserved for a command's actual output (e.g. the CLI import report)
+    handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(JsonFormatter())
     root = logging.getLogger()
     root.handlers[:] = [handler]
