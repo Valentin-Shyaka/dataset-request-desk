@@ -125,3 +125,23 @@ class AssignIn(BaseModel):
 class EpisodePage(BaseModel):
     total: int
     items: list[EpisodeOut]
+
+
+class DayRobotCount(BaseModel):
+    day: date
+    robot_id: str
+    episodes: int
+
+
+class TaskCount(BaseModel):
+    task_name: str
+    good_episodes: int
+
+
+class AnalyticsOut(BaseModel):
+    date_from: date
+    date_to: date
+    episodes_per_day: list[DayRobotCount]
+    requests_by_status: dict[str, int]
+    median_seconds_submitted_to_delivered: float | None
+    top_tasks_by_good_episodes: list[TaskCount]
