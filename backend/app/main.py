@@ -6,7 +6,7 @@ from sqlalchemy import text
 
 from app.access_log import AccessLogMiddleware, configure_logging
 from app.db import engine
-from app.routers import auth, episodes, users
+from app.routers import auth, episodes, requests, users
 
 configure_logging()
 log = logging.getLogger("drd")
@@ -16,6 +16,7 @@ app.add_middleware(AccessLogMiddleware)
 app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(episodes.router)
+app.include_router(requests.router)
 
 
 @app.get("/health")
