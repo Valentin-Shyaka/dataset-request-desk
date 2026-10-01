@@ -1,0 +1,20 @@
+:root { font-family: system-ui, sans-serif; color: #1d2330; background: #f6f7f9; }
+body { margin: 0; }
+.page { max-width: 1100px; margin: 0 auto; padding: 16px; }
+.narrow { max-width: 420px; display: flex; flex-direction: column; gap: 12px; }
+header { display: flex; justify-content: space-between; align-items: center; }
+header h1 a { color: inherit; text-decoration: none; font-size: 1.3rem; }
+label { display: flex; flex-direction: column; gap: 4px; font-size: 0.9rem; }
+input, select, textarea, button { font: inherit; padding: 6px 10px; }
+button { cursor: pointer; }
+table { width: 100%; border-collapse: collapse; background: white; margin: 8px 0 16px; }
+th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #e3e6eb; }
+.clickable { cursor: pointer; } .clickable:hover { background: #eef3ff; }
+.row, .toolbar { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; }
+.toolbar { justify-content: space-between; }
+.error { color: #b42318; } .muted { color: #6b7280; }
+.badge { padding: 2px 8px; border-radius: 999px; font-size: 0.8rem; background: #e5e7eb; }
+.badge.in_progress { background: #dbeafe; } .badge.delivered { background: #fef3c7; }
+.badge.accepted { background: #dcfce7; } .badge.rejected { background: #fee2e2; }
+.history { padding-left: 18px; } .notes { white-space: pre-wrap; background: white; padding: 8px; }
+.picker { background: white; padding: 12px; border: 1px solid #e3e6eb; }

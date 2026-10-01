@@ -37,5 +37,13 @@ services:
       timeout: 3s
       retries: 20
 
+  web:
+    build: ./frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
 volumes:
   pgdata:
