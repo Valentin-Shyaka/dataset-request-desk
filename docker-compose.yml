@@ -15,5 +15,24 @@ services:
       timeout: 3s
       retries: 30
 
+  api:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql+psycopg://drd:drd@db:5432/drd
+      # dev default only; set JWT_SECRET (>= 32 bytes) in the environment for any real deployment
+      JWT_SECRET: ${JWT_SECRET:-dev-only-insecure-secret-change-me-0123456789}
+    volumes:
+      - ./seed:/seed:ro
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
 volumes:
   pgdata:
