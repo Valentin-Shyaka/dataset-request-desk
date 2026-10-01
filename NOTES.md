@@ -51,7 +51,8 @@ All state lives in PostgreSQL. The API is stateless:
 | unknown or blank robot (`arm-99`) | rejected |
 | invalid or blank quality (`excellent`) | rejected |
 | blank operator name | accepted as NULL (no rule depends on it) |
-| wrong column count, blank lines | rejected / reported |
+| wrong column count, blank lines, NUL characters, text longer than the column allows | rejected / reported |
+| broken file structure (wrong header, not UTF-8, unterminated quote) | whole file rejected with a 400 |
 | quoted comma (`"pick cup, then place"`) | kept (real CSV parser) |
 | identical duplicate | first kept, others reported |
 | same ID, different values | all copies rejected |
@@ -63,6 +64,8 @@ Re-import is an upsert on `episode_id` that only rewrites rows whose values chan
 - **A client can't see another client's request.** It returns **404**, not 403, so IDs can't be probed.
 - **409 vs 403 on transitions.** 409 means the move doesn't exist from this state. 403 means it exists but belongs to another role. Admins can do everything operators can, but **not** accept or reject; that's the client's decision.
 - **Assignments can only change while the request is `in_progress`.** Once delivered, the set the client is reviewing is frozen. Assigning is all-or-nothing per call. "At least `episodes_requested`" allows over-assignment (spares).
+- **An import never changes an episode that is assigned to a request.** Otherwise a corrected export could turn it `bad` after the fact. The row is skipped with the reason "assigned to request N; unassign it before changing its data". Identical data counts as unchanged.
+- **The seed CSV is imported only into an empty database** (`--if-empty`). Re-importing it on every container restart would silently revert newer data.
 - **Analytics** filters episodes by `recorded_at` and requests by `created_at`. Days are UTC calendar days. The median is measured to the *first* delivery, so rework doesn't distort turnaround time.
 - **Live updates are for staff only**, because events reveal activity on every client's requests.
 
@@ -98,6 +101,8 @@ Re-import is an upsert on `episode_id` that only rewrites rows whose values chan
 - **Lesson.** A health check should exercise the same path as the real client. My daily dev loop never wiped the volume, so only the "fresh clone" test caught it.
 
 **A smaller one.** The CLI import printed its JSON report *and* a JSON log line to stdout, so piping it into a parser failed with "Extra data: line 2". The root cause was the log handler writing to stdout. Logs now go to stderr, and a regression test asserts that stdout is pure JSON.
+
+**Caught by an independent final review:** malformed rows (over-long text, NUL bytes, out-of-range dates) passed my cleaning rules but were rejected by Postgres, which crashed the *whole* import with a 500. Also, the container re-imported the seed file on every restart, reverting newer data. Both were fixed test-first.
 
 **Also caught by tests:**
 - My first deliver guard used `!=` instead of `<`, which would have made over-assigned requests impossible to deliver. Now there's a test for over-assignment.

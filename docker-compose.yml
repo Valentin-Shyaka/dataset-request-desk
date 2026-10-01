@@ -6,7 +6,9 @@ services:
       POSTGRES_PASSWORD: drd
       POSTGRES_DB: drd
     ports:
-      - "5432:5432"   # exposed so tests can run from the host; would not be exposed in production
+      # Only for running tests from the host. Bound to localhost (not the LAN); override the port with
+      # DB_PORT if 5432 is already taken by a local Postgres. Nothing in the compose network needs it.
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -27,7 +29,7 @@ services:
     volumes:
       - ./seed:/seed:ro
     ports:
-      - "8000:8000"
+      - "127.0.0.1:${API_PORT:-8000}:8000"   # direct API access (/docs); the UI goes through web on 8080
     depends_on:
       db:
         condition: service_healthy
@@ -40,7 +42,7 @@ services:
   web:
     build: ./frontend
     ports:
-      - "8080:80"
+      - "${WEB_PORT:-8080}:80"
     depends_on:
       api:
         condition: service_healthy

@@ -145,3 +145,81 @@ def test_cli_prints_only_the_report_on_stdout(capsys):
         root.handlers[:] = saved_handlers  # cli.main reconfigures logging; don't leak that into other tests
     report = json.loads(capsys.readouterr().out)
     assert report["inserted"] == 171
+
+
+@pytest.mark.parametrize("line,reason", [
+    ("EP-1,arm-01," + "t" * 201 + ",2026-08-13T06:59:00,82,P,good", "task_name is longer than 200"),
+    ("EP-1,arm-01,pick cup,2026-08-13T06:59:00,82," + "o" * 201 + ",good", "operator_name is longer than 200"),
+    ("EP-" + "1" * 60 + ",arm-01,pick cup,2026-08-13T06:59:00,82,P,good", "invalid episode_id"),
+    ("EP-1,arm-01,pick\x00cup,2026-08-13T06:59:00,82,P,good", "NUL"),
+    ("EP-1,arm-01,pick cup,0001-01-01 00:00:00+05:00,82,P,good", "unrecognised recorded_at"),
+])
+def test_rows_the_database_would_reject_are_skipped_not_crashed(line, reason):
+    """Regression (final review): these passed cleaning, then crashed the whole batch insert with a 500."""
+    rows, report = parse(line + "\n")
+    assert rows == []
+    assert reason in report.skipped[0].reason
+
+
+def test_malformed_csv_structure_is_a_file_error():
+    """An unterminated quote makes csv read past its 128 KB field limit."""
+    with pytest.raises(ImportFileError):
+        parse('EP-1,arm-01,"' + "x" * 200_000 + "\n")
+
+
+def test_endpoint_returns_400_for_overlong_field(login, make_user):
+    operator = login(make_user(Role.OPERATOR))
+    body = HEADER + 'EP-1,arm-01,"' + "x" * 200_000 + "\n"
+    response = operator.post("/api/episodes/import", files={"file": ("e.csv", body.encode(), "text/csv")})
+    assert response.status_code == 400
+
+
+def test_cli_if_empty_does_not_overwrite_existing_episodes(db, capsys):
+    """Regression (final review): start.sh re-imported the seed on every boot, reverting newer data.
+    The boot import uses --if-empty, so it only seeds a fresh database."""
+    import logging
+
+    from app import cli
+
+    root = logging.getLogger()
+    saved_handlers = root.handlers[:]
+    try:
+        cli.main(["import-episodes", "--if-empty", str(SEED_CSV)])
+        corrected = db.get(Episode, "EP-00156")
+        corrected.quality = "bad"  # e.g. a later, corrected export changed it
+        db.commit()
+        cli.main(["import-episodes", "--if-empty", str(SEED_CSV)])  # simulated restart
+    finally:
+        root.handlers[:] = saved_handlers
+    db.expire_all()
+    assert db.get(Episode, "EP-00156").quality == "bad"
+    assert db.scalar(select(func.count()).select_from(Episode)) == 171
+
+
+def test_reimport_never_changes_an_assigned_episode(db, make_user):
+    """Regression (final review): a corrected export could turn an assigned episode 'bad' after the fact,
+    breaking the assignment rule for that request. Assigned episodes are left alone and reported."""
+    from datetime import date
+
+    from app.models import Assignment, DatasetRequest, Status
+
+    line = "EP-1,arm-01,pick cup,2026-08-13T06:59:00,82,P,{quality}\n"
+    import_episodes(db, io.StringIO(HEADER + line.format(quality="good")))
+    client, operator = make_user(Role.CLIENT), make_user(Role.OPERATOR)
+    request = DatasetRequest(client_id=client.id, task_name="pick cup", episodes_requested=1,
+                             deadline=date(2026, 12, 1), status=Status.IN_PROGRESS)
+    db.add(request)
+    db.flush()
+    db.add(Assignment(request_id=request.id, episode_id="EP-1", assigned_by_id=operator.id))
+    db.commit()
+
+    same = import_episodes(db, io.StringIO(HEADER + line.format(quality="good")))
+    assert (same.unchanged, same.skipped) == (1, [])  # identical data is not a problem
+
+    other = "EP-2,arm-01,pick cup,2026-08-13T07:00:00,30,P,good\n"  # same batch, so counts must stay exact
+    changed = import_episodes(db, io.StringIO(HEADER + line.format(quality="bad") + other))
+    assert (changed.inserted, changed.updated, changed.unchanged) == (1, 0, 0)
+    [skipped] = changed.skipped
+    assert skipped.line == 2 and f"assigned to request {request.id}" in skipped.reason
+    db.expire_all()
+    assert db.get(Episode, "EP-1").quality == "good"

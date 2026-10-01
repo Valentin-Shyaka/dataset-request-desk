@@ -24,7 +24,9 @@ docker compose up --build
 | Health | http://localhost:8080/health |
 | API docs (OpenAPI) | http://localhost:8000/docs |
 
-On start, the API container runs the migrations, creates the seed users, and imports `seed/episodes.csv`. All three steps are idempotent, so restarting is always safe.
+On start, the API container runs the migrations and creates any missing seed users. On a fresh database it also imports `seed/episodes.csv`. Restarts never re-import the seed (`--if-empty`), so data from later imports is never reverted.
+
+If ports 8080, 8000 or 5432 are already in use on your machine, override them, for example `WEB_PORT=9080 DB_PORT=55432 docker compose up --build`. The database and API ports are bound to localhost only.
 
 ### Seed users
 
@@ -49,7 +51,7 @@ Without Docker for the API (Postgres still needed): run `docker compose up -d db
 cd backend && python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt && .venv/bin/pytest
 ```
 
-The suite (168 tests) runs against real PostgreSQL, using the real migrations (down, then up). It focuses on what the brief cares about:
+The suite (177 tests) runs against real PostgreSQL, using the real migrations (down, then up). It focuses on what the brief cares about:
 
 | Area | File |
 |---|---|
@@ -72,7 +74,7 @@ Over HTTP (operator or admin session):
 curl -c jar -H 'Content-Type: application/json' -d '{"email":"ops1@example.com","password":"ops123"}' localhost:8080/api/auth/login
 curl -b jar -F file=@seed/episodes.csv localhost:8080/api/episodes/import
 ```
-Both print a report: `rows_read`, `inserted`, `updated`, `unchanged`, and `skipped` (with line number and reason for each). The seed file gives **191 read, 171 inserted, 20 skipped**. Running it again gives **171 unchanged**. The cleaning rules are in NOTES.md.
+Both print a report: `rows_read`, `inserted`, `updated`, `unchanged`, and `skipped` (with line number and reason for each). A malformed row is skipped and reported; it never aborts the import. An unreadable file (wrong header, not UTF-8, broken quoting) is rejected as a whole with a 400. The seed file gives **191 read, 171 inserted, 20 skipped**. Running it again gives **171 unchanged**. The cleaning rules are in NOTES.md.
 
 ## API overview
 

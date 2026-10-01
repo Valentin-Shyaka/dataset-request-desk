@@ -6,7 +6,7 @@ Policy: normalise *formatting* (whitespace, casing, known date formats) but neve
 import csv
 import logging
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from typing import TextIO
 
@@ -14,13 +14,15 @@ from sqlalchemy import or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from app.models import Episode, Quality, Robot
+from app.models import Assignment, Episode, Quality, Robot
 from app.normalise import normalise_episode_id, normalise_task_name
 
 EXPECTED_HEADER = ["episode_id", "robot_id", "task_name", "recorded_at",
                    "duration_seconds", "operator_name", "quality"]
 DATA_COLUMNS = EXPECTED_HEADER[1:]  # everything except the key
-EPISODE_ID_RE = re.compile(r"EP-\d+")
+# [0-9] not \d (which also matches e.g. Arabic-Indic digits); length fits the 50-char column.
+EPISODE_ID_RE = re.compile(r"EP-[0-9]{1,47}")
+MAX_TEXT_LENGTH = 200  # task_name and operator_name columns are VARCHAR(200)
 MAX_DURATION_SECONDS = 4 * 60 * 60
 BATCH_SIZE = 1000
 VALID_QUALITIES = {q.value for q in Quality}
@@ -45,6 +47,10 @@ class CleanRow:
     duration_seconds: int
     operator_name: str | None
     quality: str
+    line: int = field(default=0, compare=False)  # where it came from; not part of the episode's data
+
+    def values(self) -> dict:
+        return {"episode_id": self.episode_id} | {column: getattr(self, column) for column in DATA_COLUMNS}
 
 
 @dataclass
@@ -77,7 +83,10 @@ def parse_timestamp(raw: str) -> datetime:
             raise RowError(f"unrecognised recorded_at {raw!r}") from None
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)  # the recording system exports UTC
-    return parsed.astimezone(UTC)
+    try:
+        return parsed.astimezone(UTC)
+    except OverflowError:  # e.g. 0001-01-01 with a positive offset falls before year 1 in UTC
+        raise RowError(f"unrecognised recorded_at {raw!r}") from None
 
 
 def parse_duration(raw: str) -> int:
@@ -94,6 +103,8 @@ def parse_duration(raw: str) -> int:
 def clean_row(raw: list[str], known_robots: set[str]) -> CleanRow:
     if len(raw) != len(EXPECTED_HEADER):
         raise RowError(f"expected {len(EXPECTED_HEADER)} columns, got {len(raw)}")
+    if any("\x00" in cell for cell in raw):
+        raise RowError("contains a NUL character")
     episode_id, robot_id, task_name, recorded_at, duration, operator_name, quality = raw
 
     episode_id = normalise_episode_id(episode_id)
@@ -105,6 +116,11 @@ def clean_row(raw: list[str], known_robots: set[str]) -> CleanRow:
     task_name = normalise_task_name(task_name)
     if not task_name:
         raise RowError("task_name is empty")
+    if len(task_name) > MAX_TEXT_LENGTH:
+        raise RowError(f"task_name is longer than {MAX_TEXT_LENGTH} characters")
+    operator_name = operator_name.strip() or None
+    if operator_name and len(operator_name) > MAX_TEXT_LENGTH:
+        raise RowError(f"operator_name is longer than {MAX_TEXT_LENGTH} characters")
     quality = quality.strip().lower()
     if quality not in VALID_QUALITIES:
         raise RowError(f"invalid quality {raw[6]!r}")
@@ -115,7 +131,7 @@ def clean_row(raw: list[str], known_robots: set[str]) -> CleanRow:
         task_name=task_name,
         recorded_at=parse_timestamp(recorded_at),
         duration_seconds=parse_duration(duration),
-        operator_name=operator_name.strip() or None,
+        operator_name=operator_name,
         quality=quality,
     )
 
@@ -131,14 +147,18 @@ def parse_csv(stream: TextIO, known_robots: set[str]) -> tuple[list[CleanRow], I
     first_seen: dict[str, tuple[int, CleanRow]] = {}
     conflicts: dict[str, list[int]] = {}
 
-    for raw in reader:
-        line = reader.line_num  # physical line in the file, so people can find it
+    try:
+        rows_with_lines = [(reader.line_num, raw) for raw in reader]  # line_num: physical line in the file
+    except csv.Error as exc:  # e.g. an unterminated quote swallowing the rest of the file
+        raise ImportFileError(f"malformed CSV near line {reader.line_num}: {exc}") from None
+
+    for line, raw in rows_with_lines:
         report.rows_read += 1
         if not any(cell.strip() for cell in raw):
             report.skipped.append(Skipped(line, None, "blank line"))
             continue
         try:
-            row = clean_row(raw, known_robots)
+            row = replace(clean_row(raw, known_robots), line=line)
         except RowError as exc:
             report.skipped.append(Skipped(line, raw[0].strip() or None, str(exc)))
             continue
@@ -169,6 +189,7 @@ def import_episodes(db: Session, stream: TextIO) -> ImportReport:
     for start in range(0, len(rows), BATCH_SIZE):
         _upsert_batch(db, rows[start:start + BATCH_SIZE], report)
     db.commit()  # all or nothing
+    report.skipped.sort(key=lambda s: s.line)
     log.info("episode import finished", extra={"fields": {
         k: v for k, v in report.to_dict().items() if k != "skipped"
     }})
@@ -177,10 +198,13 @@ def import_episodes(db: Session, stream: TextIO) -> ImportReport:
 
 def _upsert_batch(db: Session, batch: list[CleanRow], report: ImportReport) -> None:
     episodes = Episode.__table__
+    batch = _drop_changes_to_assigned_episodes(db, batch, report)  # before counting: skipped rows count once
+    if not batch:
+        return
     ids = [row.episode_id for row in batch]
     existing = set(db.scalars(select(episodes.c.episode_id).where(episodes.c.episode_id.in_(ids))))
 
-    stmt = insert(episodes).values([asdict(row) for row in batch])
+    stmt = insert(episodes).values([row.values() for row in batch])
     stmt = stmt.on_conflict_do_update(
         index_elements=[episodes.c.episode_id],
         set_={column: stmt.excluded[column] for column in DATA_COLUMNS},
@@ -192,3 +216,26 @@ def _upsert_batch(db: Session, batch: list[CleanRow], report: ImportReport) -> N
     report.inserted += len(written - existing)
     report.updated += len(written & existing)
     report.unchanged += len(existing - written)
+
+
+def _drop_changes_to_assigned_episodes(db: Session, batch: list[CleanRow], report: ImportReport) -> list[CleanRow]:
+    """An episode already assigned to a request is never changed by an import: a corrected export could
+    otherwise turn it 'bad' (or move it to another task) behind the request's back. Identical data passes
+    through and is counted as unchanged; a real change is skipped and reported so someone can decide."""
+    ids = [row.episode_id for row in batch]
+    assigned_to = dict(db.execute(
+        select(Assignment.episode_id, Assignment.request_id).where(Assignment.episode_id.in_(ids))
+    ).all())
+    if not assigned_to:
+        return batch
+    current = {e.episode_id: e for e in db.scalars(select(Episode).where(Episode.episode_id.in_(assigned_to)))}
+    kept = []
+    for row in batch:
+        stored = current.get(row.episode_id)
+        if stored is not None and any(getattr(stored, c) != getattr(row, c) for c in DATA_COLUMNS):
+            request_id = assigned_to[row.episode_id]
+            report.skipped.append(Skipped(row.line, row.episode_id,
+                                          f"assigned to request {request_id}; unassign it before changing its data"))
+        else:
+            kept.append(row)
+    return kept
