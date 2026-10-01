@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.db import get_db
 from app.deps import get_current_user, require_roles
+from app.events import broker
 from app.models import (
     ASSIGNABLE_QUALITIES,
     STAFF_ROLES,
@@ -21,11 +22,6 @@ from app.schemas import AssignIn, EpisodeOut, RequestCreate, RequestDetail, Requ
 from app.workflow import TransitionError, allowed_transitions, check_transition
 
 router = APIRouter(prefix="/api/requests", tags=["requests"])
-
-
-def publish(event: dict) -> None:
-    """Replaced by the SSE broker in Task 10."""
-
 
 
 def _load_for_user(db: Session, request_id: int, user: User, *, lock: bool = False) -> DatasetRequest:
@@ -86,7 +82,7 @@ def create_request(body: RequestCreate, db: Session = Depends(get_db),
     db.flush()  # get request.id before writing the history row
     db.add(StatusEvent(request_id=request.id, from_status=None, to_status=Status.SUBMITTED, actor_id=user.id))
     db.commit()
-    publish({"type": "request.created", "data": {"id": request.id}})
+    broker.publish({"type": "request.created", "data": {"id": request.id}})
     return _detail(db, request.id, user)
 
 
@@ -136,7 +132,7 @@ def transition_request(request_id: int, body: TransitionIn, db: Session = Depend
     db.add(StatusEvent(request_id=request.id, from_status=current, to_status=body.to_status,
                        actor_id=user.id, note=body.note))
     db.commit()
-    publish({"type": "request.status_changed", "data": {"id": request.id, "status": body.to_status}})
+    broker.publish({"type": "request.status_changed", "data": {"id": request.id, "status": body.to_status}})
     return _detail(db, request_id, user)
 
 
@@ -185,7 +181,7 @@ def assign_episodes(request_id: int, body: AssignIn, db: Session = Depends(get_d
         db.rollback()
         raise HTTPException(status.HTTP_409_CONFLICT,
                             "One of these episodes was just assigned elsewhere; refresh and try again") from None
-    publish({"type": "request.assignments_changed", "data": {"id": request_id}})
+    broker.publish({"type": "request.assignments_changed", "data": {"id": request_id}})
     return _detail(db, request_id, user)
 
 
@@ -200,5 +196,5 @@ def unassign_episode(request_id: int, episode_id: str, db: Session = Depends(get
         raise HTTPException(status.HTTP_404_NOT_FOUND, "That episode is not assigned to this request")
     db.delete(assignment)
     db.commit()
-    publish({"type": "request.assignments_changed", "data": {"id": request_id}})
+    broker.publish({"type": "request.assignments_changed", "data": {"id": request_id}})
     return _detail(db, request_id, user)
