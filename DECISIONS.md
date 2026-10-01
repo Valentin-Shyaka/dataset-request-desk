@@ -22,3 +22,14 @@
 - CLI import output wasn't valid JSON: log lines and the report both went to stdout, so piping to jq/json.load failed
   ("Extra data: line 2"). Diagnosed by looking at raw stdout; root cause StreamHandler(sys.stdout). Fix: logs -> stderr.
   Regression test: test_cli_prints_only_the_report_on_stdout.
+- Fresh-clone `docker compose up` failed: api crashed with "connection refused" even though db was "healthy".
+  Diagnosed by comparing db and api log timestamps: on an empty volume the postgres image runs a temporary
+  init server on the Unix socket only; `pg_isready` (socket by default) reported healthy during init, the api
+  connected over TCP and was refused. Fix: healthcheck `pg_isready -h 127.0.0.1` (TCP), plus `restart: on-failure`
+  on api as a safety net. Verified: clean volume -> healthy with 0 restarts. Lesson: health checks must test the
+  same path the client uses.
+
+## Ops
+- Migrations + seed + import run in api start.sh; all idempotent so restarts are safe. With several replicas,
+  migrations should move to a one-off job before deploy.
+- Tests run inside the api image (`make test`) against drd_test; pytest cache disabled (container is non-root).

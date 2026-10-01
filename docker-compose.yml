@@ -10,13 +10,16 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U drd -d drd"]
+      # -h 127.0.0.1 forces TCP. On a fresh volume the image first runs a temporary init server on the
+      # Unix socket only; a socket check reports "healthy" too early and the api's TCP connect is refused.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U drd -d drd"]
       interval: 2s
       timeout: 3s
       retries: 30
 
   api:
     build: ./backend
+    restart: on-failure
     environment:
       DATABASE_URL: postgresql+psycopg://drd:drd@db:5432/drd
       # dev default only; set JWT_SECRET (>= 32 bytes) in the environment for any real deployment
